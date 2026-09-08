@@ -116,20 +116,30 @@ earth --json --project 1079 content get page 33537
 
 Campos que importam: `new_step`, `current_status` (e `name`, `url`).
 
-**Classificação de cada item:**
+**Classificação de cada item (4 estados):**
 
 | Situação | Regra | Conta como |
 |----------|-------|-----------|
-| **Publicado** | `new_step` ∈ {`PUBLISH`, `PUBLISHED`} | ✅ no ar |
-| **Cancelado/rejeitado** | `current_status` = `REJECTED` (ou marcado cancelado) | 🚫 não precisa subir |
-| **Pendente** | qualquer outro `new_step`, sem ser cancelado | ❌ falta publicar |
+| **Publicado (no ar)** | `new_step` = `PUBLISHED` | ✅ está no site |
+| **A publicar (upload não confirmado)** | `new_step` = `PUBLISH` | ⏳ liberado pra subir — **CONFIRMAR ao vivo** (passo 3) |
+| **Cancelado/rejeitado** | `current_status` = `REJECTED` | 🚫 não precisa subir |
+| **Pendente** | `new_step` anterior a PUBLISH (PLANNING…CLIENT_REVIEW), sem ser cancelado | ❌ falta produzir/revisar/publicar |
 
 Erra para o lado de sinalizar pendência: `new_step` desconhecido e **não**
 cancelado = pendente.
 
-**Por que `PUBLISH` também conta:** no fluxo da liveSEO, **blogpost no ar costuma
-ficar em `PUBLISH`** ("Publicar") e **página no ar costuma ir para `PUBLISHED`**
-("Publicado"). Aceitar só `PUBLISHED` marcaria blog publicado como pendente.
+**A diferença Publicar × Publicado (confirmado no histórico, CB789):**
+`PUBLISH` ("Publicar") = conteúdo **aprovado e liberado para ir ao ar** — é o
+handoff pro time técnico, entra na fila de upload; **não garante que já está no
+site**. `PUBLISHED` ("Publicado") = o técnico **subiu e confirmou** — aí sim está
+no ar. O upload é exatamente o passo que leva de `PUBLISH` → `PUBLISHED` (no CB789,
+14 dias entre um e outro no post 47691).
+
+Por isso: **só `PUBLISHED` conta como "no ar" com certeza.** `PUBLISH` é o único
+estado ambíguo — em algumas squads o item fica parado em `PUBLISH` mesmo já no ar
+(CB491), em outras `PUBLISH` é só transitório e o que está no ar vai pra
+`PUBLISHED` (CB789). **Todo item em `PUBLISH` deve ser confirmado ao vivo** (passo
+3): no ar → conta como publicado; fora do ar/404 → é upload pendente.
 
 **Enum oficial (`new_step`)**, na ordem da barra de etapas do app:
 
@@ -141,12 +151,13 @@ ficar em `PUBLISH`** ("Publicar") e **página no ar costuma ir para `PUBLISHED`*
 | 4 | Produção | `PRODUCTION` | ❌ não |
 | 5 | Revisão | `REVIEW` / `REVIEWED` | ❌ não |
 | 6 | Revisão cliente | `CLIENT_REVIEW` | ❌ não |
-| 7 | **Publicar** | `PUBLISH` | ✅ **sim** |
-| 8 | **Publicado** | `PUBLISHED` | ✅ **sim** |
+| 7 | **Publicar** | `PUBLISH` | ⏳ liberado — **confirmar ao vivo** |
+| 8 | **Publicado** | `PUBLISHED` | ✅ **no ar** |
 
-\* rótulos internos de "Aprovação de pauta"/"Backlog" não foram confirmados — como
-a regra é accept-list, qualquer coisa fora de {`PUBLISH`,`PUBLISHED`} já cai em
-"não publicado", então não depende desses nomes.
+\* rótulos internos de "Aprovação de pauta"/"Backlog" variam por projeto (já visto
+`APPROVAL`, `SCHEDULE`, `BACKLOG`) — como só `PUBLISHED` conta como no ar e
+`PUBLISH` sempre é confirmado ao vivo, o resto (qualquer etapa ≤ CLIENT_REVIEW) já
+cai em "pendente" independentemente do rótulo exato.
 
 `current_status` observado: `WAITING` (normal, itens no ar ficam assim),
 `REJECTED` (cancelado/rejeitado). O campo `status` (0/false/null) é **inconsistente
@@ -156,17 +167,24 @@ entre endpoints** — não confie nele; use `current_status` para detectar cance
 > status.** Erram em muitas páginas e, quando respondem, trazem o `step` legado
 > (errado). Use a `earth-cli`.
 
-### 3. (Opcional) Confirmar ao vivo — só quando houver dúvida ou id ausente
-Para item **sem id do Earth** (a Produção só linka a URL final) ou quando o
-`new_step` parecer inconsistente com o contexto, confirme abrindo a URL no ar
-(Claude in Chrome ou navegação) e comparando o **título produzido** com o
-`document.title`/`<h1>` da página:
+### 3. Confirmar ao vivo — itens em `PUBLISH`, sem id, ou em dúvida
+Confirme abrindo a URL no ar (Claude in Chrome ou navegação) e comparando o
+**título produzido** com o `document.title`/`<h1>` da página. Faça isso para:
 
+- **Todo item em `new_step: PUBLISH`** — é "liberado pra publicar", não garante que
+  já subiu; a confirmação ao vivo decide se conta como publicado ou upload pendente.
+- Item **sem id do Earth** (a Produção só linka a URL final).
+- Qualquer `new_step` que pareça inconsistente com o contexto.
+
+Resultado:
 - Títulos **batem** e sem 404 → publicado. ✅
-- Título **genérico/diferente** ou **404** → trate como **não publicado**. ⚠️
+- Título **genérico/diferente** ou **404** → **upload pendente**. ⚠️
 
 Cuidado: **alguns domínios de loja bloqueiam/atrasam** o navegador (timeout); se
-não abrir, registre que a confirmação ao vivo não foi possível.
+não abrir, registre que a confirmação ao vivo não foi possível e mantenha o item
+como **a confirmar** (não arredonde para publicado).
+
+Itens em `PUBLISHED` **não** precisam de confirmação ao vivo — já estão no site.
 
 ### 4. Ler os comentários (contexto) e relatar
 `earth --json task comment list <subtaskId>` (ou o MCP `get_subtask_comments`)
@@ -181,16 +199,20 @@ Produção: N conteúdos (dedup). Etapa atual (new_step / current_status):
 
 | Status | Qtd |
 |--------|-----|
-| ✅ Publicados | X |
+| ✅ Publicados (PUBLISHED — no site) | X |
+| ⏳ A publicar (PUBLISH — confirmado ao vivo: no ar / fora do ar) | A |
 | 🚫 Cancelados/rejeitados (não precisam subir) | C |
-| ❌ Pendentes | P |
+| ❌ Pendentes (≤ CLIENT_REVIEW) | P |
 
-Pendências (liste cada não publicado com nome, etapa e link do Earth).
+A publicar (liste cada PUBLISH e o resultado da confirmação ao vivo).
+Pendências (liste cada um com nome, etapa e link do Earth).
 Cancelados (liste, para transparência).
 ```
 
-Se houver **qualquer** item pendente (nem publicado nem cancelado), diga isso
-explicitamente em vez de arredondar para "tudo certo".
+Trate o bucket **A publicar (`PUBLISH`)** sempre com o resultado da confirmação ao
+vivo: os que estão no ar somam aos publicados de fato; os fora do ar viram
+pendência de upload. Se houver **qualquer** item pendente (ou PUBLISH fora do ar),
+diga isso explicitamente em vez de arredondar para "tudo certo".
 
 ## Comentar e finalizar (só com confirmação)
 
@@ -223,19 +245,20 @@ O campo `comment` aceita HTML. Modelos:
   Monte a URL pelo **tipo** (page/blog) e **id** de cada item; use o `name`/título
   lido no passo 2 como texto.
 
-### Rotear no kanban (só quando NÃO houver pendência)
-Regra: **se nenhum item de produção estiver pendente** (todos publicados e/ou
-cancelados/rejeitados), mova a tarefa para a coluna **"Para revisão"** (revisão
-humana antes de finalizar) — só após confirmação do usuário. Resolva o id da coluna
-**pelo nome "Para revisão"** (no CB491/CB789 é 215, mas **não fixe o id** — varia por
-projeto):
+### Rotear no kanban (só quando tudo estiver no ar ou cancelado)
+Regra: mova para **"Para revisão"** apenas quando **todo item de produção estiver
+`PUBLISHED` (ou `PUBLISH` confirmado no ar) ou cancelado/rejeitado** — ou seja, zero
+pendências e nenhum `PUBLISH` fora do ar. Só após confirmação do usuário. Resolva o
+id da coluna **pelo nome "Para revisão"** (no CB491/CB789 é 215, mas **não fixe o
+id** — varia por projeto):
 
 - earth-cli: `earth --json --project {id} task move <task_tag_id> <subtask_id> <step_id>`.
 - MCP (fallback): `get_kanban_columns` + `move_subtask_kanban_step`.
 
-**Se houver qualquer pendência (item não publicado e não cancelado), NÃO mova** —
-deixe na coluna atual e reporte o que falta. Não use "Finalizada": a skill entrega
-para revisão, quem finaliza é o líder/revisor.
+**Se houver qualquer pendência — item ≤ CLIENT_REVIEW, ou `PUBLISH` que a
+confirmação ao vivo mostrou fora do ar — NÃO mova.** Deixe na coluna atual e reporte
+o que falta subir. Não use "Finalizada": a skill entrega para revisão, quem finaliza
+é o líder/revisor.
 
 ## Princípios
 
@@ -243,8 +266,9 @@ para revisão, quem finaliza é o líder/revisor.
   O `step` do MCP é legado; o MCP de conteúdo erra; o DW é proibido.
 - **Verifique todos, sem amostragem.** Deduplique os ids; prefira `content list` em
   lote (1 chamada por tipo) e cruze pelos ids da Produção.
-- **Accept-list em `PUBLISH` + `PUBLISHED`.** Blog no ar costuma ficar em
-  `PUBLISH`; página no ar, em `PUBLISHED`. Qualquer etapa anterior = não publicado.
+- **No ar com certeza = `PUBLISHED`.** `PUBLISH` ("Publicar") é "liberado pra subir",
+  **não** garante que está no site — **sempre confirme ao vivo** os itens em PUBLISH.
+  Qualquer etapa ≤ CLIENT_REVIEW = pendente.
 - **Cancelado/rejeitado (`current_status: REJECTED`) não é pendência** — não conta
   como falta e não impede a conclusão.
 - **A verdade é o status no Earth (e, em dúvida, o site ao vivo), não o bloco de

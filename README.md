@@ -15,7 +15,7 @@ Roda dentro do Claude Code, com a `earth-cli` autenticada como leitor de status.
 
 | Skill | O que faz | Custo |
 |---|---|---|
-| `verificar-upload-conteudo` | Lê a lista de **Produção** de uma tarefa, checa a etapa atual de cada conteúdo (categoria ou blogpost) e devolve um quadro **publicado / cancelado / não publicado**. Ao final, oferece comentar na tarefa e roteá-la no kanban | $0 |
+| `verificar-upload-conteudo` | Lê a lista de **Produção** de uma tarefa, checa a etapa atual de cada conteúdo (categoria ou blogpost) e devolve um quadro **publicado / a publicar / cancelado / não publicado**. Ao final, oferece comentar na tarefa e roteá-la no kanban | $0 |
 
 Dispara sozinha quando alguém cola um link de tarefa
 (`…/projeto/CB###/task/<id>/<id>`) e pergunta se os conteúdos "foram
@@ -37,9 +37,10 @@ lista de PRODUÇÃO (fonte da verdade)          bloco de UPLOAD
    (1 chamada por tipo, cruza por id)          por conteúdo, status ATUAL
             │
             ▼
-   accept-list: new_step ∈ {PUBLISH, PUBLISHED}  =  ✅ no ar
-   current_status = REJECTED                      =  🚫 cancelado, não é pendência
-   qualquer outra coisa                           =  ❌ falta publicar
+   new_step = PUBLISHED         =  ✅ no site (certeza)
+   new_step = PUBLISH           =  ⏳ liberado pra subir → CONFIRMAR ao vivo
+   current_status = REJECTED    =  🚫 cancelado, não é pendência
+   new_step ≤ CLIENT_REVIEW     =  ❌ falta produzir/revisar/publicar
 ```
 
 > ⚠ **Não use o MCP de conteúdo como leitor de status.** O
@@ -55,10 +56,14 @@ As três armadilhas, nomeadas:
 - **O bloco de Upload mente.** A tarefa costuma ter um bloco "Upload" / "Controle
   de upload" além do de Produção, mas ele fica vazio ou desatualizado. A **lista
   de Produção** é a única fonte confiável do que precisa estar no ar.
-- **Blog no ar fica em `PUBLISH`, não `PUBLISHED`.** No fluxo da liveSEO, blogpost
-  publicado costuma parar em "Publicar" (`PUBLISH`) e página em "Publicado"
-  (`PUBLISHED`). Aceitar só `PUBLISHED` marcaria blog publicado como pendente — por
-  isso a accept-list tem os dois.
+- **`PUBLISH` ("Publicar") não é o mesmo que estar no site.** `PUBLISH` = conteúdo
+  aprovado e **liberado pra subir** (handoff pro time técnico); `PUBLISHED`
+  ("Publicado") = o técnico **subiu e confirmou**, aí sim está no ar. O upload é
+  exatamente o passo que leva de um ao outro (no CB789, 14 dias entre `PUBLISH` e
+  `PUBLISHED` no post 47691). Só `PUBLISHED` conta como no ar com certeza; **todo
+  item em `PUBLISH` é confirmado ao vivo** — no ar conta, fora do ar é upload
+  pendente. (Varia por squad: em algumas o item fica parado em `PUBLISH` mesmo já no
+  ar; em outras `PUBLISH` é transitório e o que sobe vai pra `PUBLISHED`.)
 - **Cancelado não é pendência.** Um item em `current_status: REJECTED` foi
   descartado na revisão e não precisa subir — não conta como "falta publicar" nem
   impede a conclusão.
@@ -93,22 +98,25 @@ A skill então:
    earth --json --project 1079 content list page --param limit=500
    ```
 
-3. **(Opcional) confirma ao vivo** só os itens sem id do Earth ou com status
-   duvidoso, comparando o título produzido com o `<h1>`/`document.title` da URL no ar.
+3. **Confirma ao vivo** cada item em `PUBLISH` (além dos sem id do Earth ou com
+   status duvidoso), comparando o título produzido com o `<h1>`/`document.title` da
+   URL no ar.
 4. **Relata** um quadro separando fato verificado de inferência:
 
    ```
-   | Status                                        | Qtd |
-   |-----------------------------------------------|-----|
-   | ✅ Publicados                                  |  X  |
-   | 🚫 Cancelados/rejeitados (não precisam subir)  |  C  |
-   | ❌ Pendentes                                   |  P  |
+   | Status                                            | Qtd |
+   |---------------------------------------------------|-----|
+   | ✅ Publicados (PUBLISHED — no site)                |  X  |
+   | ⏳ A publicar (PUBLISH — confirmado ao vivo)       |  A  |
+   | 🚫 Cancelados/rejeitados (não precisam subir)      |  C  |
+   | ❌ Pendentes (≤ CLIENT_REVIEW)                     |  P  |
    ```
 
 Verificar é livre. **Comentar (público) e mover o card no kanban só acontecem
-após você confirmar** — a skill mostra o rascunho antes de postar. Se não houver
-pendência, ela oferece mover a tarefa para **"Para revisão"** (nunca "Finalizada":
-quem finaliza é o líder/revisor).
+após você confirmar** — a skill mostra o rascunho antes de postar. Ela só oferece
+mover para **"Para revisão"** quando tudo estiver `PUBLISHED` (ou `PUBLISH`
+confirmado no ar) ou cancelado — nunca com item pendente ou `PUBLISH` fora do ar, e
+nunca para "Finalizada" (quem finaliza é o líder/revisor).
 
 ## Pré-requisito
 
@@ -120,19 +128,20 @@ quem finaliza é o líder/revisor).
 
 ## Enum de referência (`new_step`)
 
-Etapas na ordem da barra do app; a skill trata como **accept-list** — só as duas
-últimas contam como no ar:
+Etapas na ordem da barra do app. Só `PUBLISHED` é "no ar" com certeza; `PUBLISH` é
+confirmado ao vivo; o resto é pendência (rótulos das etapas 2-3 variam por projeto —
+já visto `APPROVAL`, `SCHEDULE`, `BACKLOG`):
 
 | # | Etapa (app)        | `new_step`            | Publicado? |
 |---|--------------------|-----------------------|:----------:|
 | 1 | Planejamento       | `PLANNING`            | ❌ |
-| 2 | Aprovação de pauta | `SCHEDULE`            | ❌ |
+| 2 | Aprovação de pauta | `SCHEDULE`/`APPROVAL` | ❌ |
 | 3 | Backlog            | `BACKLOG`             | ❌ |
 | 4 | Produção           | `PRODUCTION`          | ❌ |
 | 5 | Revisão            | `REVIEW` / `REVIEWED` | ❌ |
 | 6 | Revisão cliente    | `CLIENT_REVIEW`       | ❌ |
-| 7 | **Publicar**       | `PUBLISH`             | ✅ |
-| 8 | **Publicado**      | `PUBLISHED`           | ✅ |
+| 7 | **Publicar**       | `PUBLISH`             | ⏳ confirmar ao vivo |
+| 8 | **Publicado**      | `PUBLISHED`           | ✅ no site |
 
 `current_status`: `WAITING` é o normal de item no ar; `REJECTED` é
 cancelado/rejeitado. O campo `status` (0/false/null) é inconsistente entre
