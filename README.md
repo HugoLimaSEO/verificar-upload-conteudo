@@ -15,7 +15,7 @@ Roda dentro do Claude Code, com a `earth-cli` autenticada como leitor de status.
 
 | Skill | O que faz | Custo |
 |---|---|---|
-| `verificar-upload-conteudo` | Lê a lista de **Produção** de uma tarefa, checa a etapa atual de cada conteúdo (categoria ou blogpost) e devolve um quadro **publicado / a publicar / cancelado / não publicado**. Ao final, oferece comentar na tarefa e roteá-la no kanban | $0 |
+| `verificar-upload-conteudo` | Lê a lista de **Produção** de uma tarefa, checa a etapa atual de cada conteúdo (categoria ou blogpost) e devolve um quadro **publicado / a publicar / cancelado / não publicado**. Se tudo estiver publicado/cancelado, move a tarefa para "Para revisão" automaticamente; comentar (público) é oferecido com confirmação | $0 |
 
 Dispara sozinha quando alguém cola um link de tarefa
 (`…/projeto/CB###/task/<id>/<id>`) e pergunta se os conteúdos "foram
@@ -112,11 +112,12 @@ A skill então:
    | ❌ Pendentes (≤ CLIENT_REVIEW)                     |  P  |
    ```
 
-Verificar é livre. **Comentar (público) e mover o card no kanban só acontecem
-após você confirmar** — a skill mostra o rascunho antes de postar. Ela só oferece
-mover para **"Para revisão"** quando tudo estiver `PUBLISHED` (ou `PUBLISH`
-confirmado no ar) ou cancelado — nunca com item pendente ou `PUBLISH` fora do ar, e
-nunca para "Finalizada" (quem finaliza é o líder/revisor).
+Verificar é livre. **Mover o card para "Para revisão" é automático:** quando tudo
+estiver `PUBLISHED` (ou `PUBLISH` confirmado no ar) ou cancelado — zero pendências e
+nenhum `PUBLISH` fora do ar — a skill **move sozinha, sem pedir confirmação**. Com
+qualquer item pendente ou `PUBLISH` fora do ar, ela **não move**, e nunca move para
+"Finalizada" (quem finaliza é o líder/revisor). **Comentar (público, visível ao
+cliente) continua exigindo confirmação** — a skill mostra o rascunho antes de postar.
 
 ## Pré-requisito
 
@@ -155,5 +156,6 @@ endpoints — **não confie nele**; use `current_status` para detectar cancelado
   lote e cruza pelos ids da Produção.
 - **A verdade é o status no Earth (e, em dúvida, o site ao vivo), não o bloco de
   Upload.**
-- **Ações no app só com o dedo do usuário.** Verificar é livre; comentar (público)
-  e finalizar exigem confirmação explícita.
+- **Roteamento automático; comunicação com confirmação.** Verificar é livre; zero
+  pendências → move para "Para revisão" sozinha. **Comentar (público) exige
+  confirmação explícita.**

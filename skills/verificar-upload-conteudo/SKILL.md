@@ -17,8 +17,10 @@ description: >-
   upload", "conferir a publicação das categorias/blogs", "checar se falta subir
   algum conteúdo". Dispare também quando descreverem uma tarefa de
   produção/revisão/upload de categorias ou blogposts e quiserem saber o status de
-  publicação. A skill só VERIFICA e relata; comentar e finalizar a tarefa são
-  passos que ela oferece e só executa após confirmação explícita do usuário.
+  publicação. A skill VERIFICA e relata; quando TODOS os conteúdos estão publicados
+  e/ou cancelados (zero pendências), ela move a tarefa automaticamente para "Para
+  revisão". O comentário PÚBLICO (visível ao cliente) continua exigindo confirmação
+  explícita do usuário.
 metadata:
   type: workflow
   source: >-
@@ -214,10 +216,16 @@ vivo: os que estão no ar somam aos publicados de fato; os fora do ar viram
 pendência de upload. Se houver **qualquer** item pendente (ou PUBLISH fora do ar),
 diga isso explicitamente em vez de arredondar para "tudo certo".
 
-## Comentar e finalizar (só com confirmação)
+## Comentar e finalizar
 
-A skill **não** posta nada nem move o card por conta própria. Depois de relatar,
-**mostre o rascunho do comentário** e só publique se o usuário confirmar.
+**Roteamento no kanban é automático.** Quando **todo item de produção estiver
+`PUBLISHED` (ou `PUBLISH` confirmado no ar) ou cancelado/rejeitado** — zero
+pendências e nenhum `PUBLISH` fora do ar — **mova a tarefa para "Para revisão"
+sozinha, sem pedir confirmação** (autorização durável do Hugo). Havendo qualquer
+pendência, **não mova** — deixe na coluna atual e reporte o que falta.
+
+**O comentário público continua exigindo confirmação.** Postar algo visível ao
+cliente é comunicação: **mostre o rascunho e só publique se o usuário confirmar.**
 
 ### Comentário público
 Poste um comentário **público** (visível a todos, incluindo o cliente). Publicar é
@@ -245,12 +253,13 @@ O campo `comment` aceita HTML. Modelos:
   Monte a URL pelo **tipo** (page/blog) e **id** de cada item; use o `name`/título
   lido no passo 2 como texto.
 
-### Rotear no kanban (só quando tudo estiver no ar ou cancelado)
-Regra: mova para **"Para revisão"** apenas quando **todo item de produção estiver
-`PUBLISHED` (ou `PUBLISH` confirmado no ar) ou cancelado/rejeitado** — ou seja, zero
-pendências e nenhum `PUBLISH` fora do ar. Só após confirmação do usuário. Resolva o
-id da coluna **pelo nome "Para revisão"** (no CB491/CB789 é 215, mas **não fixe o
-id** — varia por projeto):
+### Rotear no kanban (automático quando tudo estiver no ar ou cancelado)
+Regra: mova para **"Para revisão"** **automaticamente** quando **todo item de
+produção estiver `PUBLISHED` (ou `PUBLISH` confirmado no ar) ou cancelado/rejeitado**
+— ou seja, zero pendências e nenhum `PUBLISH` fora do ar. **Não peça confirmação
+para esse movimento** (autorização durável do Hugo); apenas informe no relatório que
+moveu. Resolva o id da coluna **pelo nome "Para revisão"** (no CB491/CB789 é 215, mas
+**não fixe o id** — varia por projeto):
 
 - earth-cli: `earth --json --project {id} task move <task_tag_id> <subtask_id> <step_id>`.
 - MCP (fallback): `get_kanban_columns` + `move_subtask_kanban_step`.
@@ -259,6 +268,9 @@ id** — varia por projeto):
 confirmação ao vivo mostrou fora do ar — NÃO mova.** Deixe na coluna atual e reporte
 o que falta subir. Não use "Finalizada": a skill entrega para revisão, quem finaliza
 é o líder/revisor.
+
+O movimento é o único passo automático. **Publicar comentário público continua
+sendo ação manual, com confirmação.**
 
 ## Princípios
 
@@ -273,5 +285,6 @@ o que falta subir. Não use "Finalizada": a skill entrega para revisão, quem fi
   como falta e não impede a conclusão.
 - **A verdade é o status no Earth (e, em dúvida, o site ao vivo), não o bloco de
   Upload.** A lista de produção diz o que precisa estar no ar.
-- **Ações no app só com o dedo do usuário.** Verificar é livre; **comentar
-  (público) e finalizar exigem confirmação explícita**.
+- **Roteamento automático quando tudo no ar/cancelado; comunicação com confirmação.**
+  Verificar é livre; zero pendências → **move para "Para revisão" sozinha** (sem
+  confirmação). **Comentar (público, visível ao cliente) exige confirmação explícita.**
