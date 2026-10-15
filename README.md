@@ -15,7 +15,7 @@ Roda dentro do Claude Code, com a `earth-cli` autenticada como leitor de status.
 
 | Skill | O que faz | Custo |
 |---|---|---|
-| `verificar-upload-conteudo` | Lê a lista de **Produção** de uma tarefa, checa a etapa atual de cada conteúdo (categoria ou blogpost) e devolve um quadro **publicado / a publicar / cancelado / não publicado**. Se tudo estiver publicado/cancelado, move a tarefa para "Para revisão" automaticamente; comentar (público) é oferecido com confirmação | $0 |
+| `verificar-upload-conteudo` | Lê a lista de **Produção** de uma tarefa, checa a etapa atual de cada conteúdo (categoria ou blogpost) e devolve um quadro **publicado / a publicar / cancelado / não publicado**. Marca como **Publicado** no módulo de conteúdo o que estava em "Publicar" e foi confirmado no ar. Se tudo estiver publicado/cancelado, move a tarefa para "Para revisão" e registra uma **nota interna** com o que está publicado; comentar (público) é oferecido com confirmação | $0 |
 
 Dispara sozinha quando alguém cola um link de tarefa
 (`…/projeto/CB###/task/<id>/<id>`) e pergunta se os conteúdos "foram
@@ -72,11 +72,13 @@ As três armadilhas, nomeadas:
 
 ```
 skills/verificar-upload-conteudo/
-  SKILL.md                 # contrato: quando dispara, o fluxo de 4 passos,
-                           # a tabela de classificação e os modelos de comentário
+  SKILL.md                 # contrato: quando dispara, o fluxo, a tabela de
+                           # classificação, o script de marcar Publicado (embutido)
+                           # e os modelos de comentário/nota interna
 ```
 
-Uma skill só de procedimento — sem scripts, sem sub-agente. Toda a leitura e as
+Uma skill só de procedimento — sem sub-agente; o único script (marcar Publicado) vai
+embutido no SKILL.md. Toda a leitura e as
 ações no app saem da `earth-cli` (fallback no MCP `liveseo-earth`).
 
 ## Como usar
@@ -101,7 +103,13 @@ A skill então:
 3. **Confirma ao vivo** cada item em `PUBLISH` (além dos sem id do Earth ou com
    status duvidoso), comparando o título produzido com o `<h1>`/`document.title` da
    URL no ar.
-4. **Relata** um quadro separando fato verificado de inferência:
+4. **Marca como Publicado** no Earth (`new_step` → `PUBLISHED`) cada item em
+   `PUBLISH` que a confirmação mostrou no ar — senão o módulo de conteúdo continua
+   em "Publicar". Usa a mesma rota do app
+   (`PATCH /content/{post|page}/{projectId}/{id}/save-changes`) com a credencial da
+   `earth-cli`, preenchendo data de publicação e responsável quando vazios. O que
+   não foi confirmado no ar não é marcado.
+5. **Relata** um quadro separando fato verificado de inferência:
 
    ```
    | Status                                            | Qtd |
@@ -114,7 +122,9 @@ A skill então:
 
 Verificar é livre. **Mover o card para "Para revisão" é automático:** quando tudo
 estiver `PUBLISHED` (ou `PUBLISH` confirmado no ar) ou cancelado — zero pendências e
-nenhum `PUBLISH` fora do ar — a skill **move sozinha, sem pedir confirmação**. Com
+nenhum `PUBLISH` fora do ar — a skill **move sozinha, sem pedir confirmação**, e
+registra na tarefa uma **nota interna** (só o time vê) dizendo que a validação foi
+feita e quais conteúdos estão publicados (link no ar + link do Earth). Com
 qualquer item pendente ou `PUBLISH` fora do ar, ela **não move**, e nunca move para
 "Finalizada" (quem finaliza é o líder/revisor). **Comentar (público, visível ao
 cliente) continua exigindo confirmação** — a skill mostra o rascunho antes de postar.
@@ -156,6 +166,7 @@ endpoints — **não confie nele**; use `current_status` para detectar cancelado
   lote e cruza pelos ids da Produção.
 - **A verdade é o status no Earth (e, em dúvida, o site ao vivo), não o bloco de
   Upload.**
+- **Confirmado no ar → marcado como Publicado no Earth.** Só o que foi confirmado.
 - **Roteamento automático; comunicação com confirmação.** Verificar é livre; zero
-  pendências → move para "Para revisão" sozinha. **Comentar (público) exige
+  pendências → move para "Para revisão" sozinha e registra a nota interna. **Comentar (público) exige
   confirmação explícita.**

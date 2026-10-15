@@ -17,18 +17,24 @@ description: >-
   upload", "conferir a publicação das categorias/blogs", "checar se falta subir
   algum conteúdo". Dispare também quando descreverem uma tarefa de
   produção/revisão/upload de categorias ou blogposts e quiserem saber o status de
-  publicação. A skill VERIFICA e relata; quando TODOS os conteúdos estão publicados
-  e/ou cancelados (zero pendências), ela move a tarefa automaticamente para "Para
-  revisão". O comentário PÚBLICO (visível ao cliente) continua exigindo confirmação
-  explícita do usuário.
+  publicação. A skill VERIFICA e relata; quando a confirmação ao vivo mostra que um
+  conteúdo em "Publicar" já está no ar, ela MARCA esse conteúdo como "Publicado" no
+  módulo de conteúdo (new_step=PUBLISHED). Quando TODOS os conteúdos estão
+  publicados e/ou cancelados (zero pendências), ela move a tarefa automaticamente
+  para "Para revisão" e registra na tarefa uma NOTA INTERNA dizendo que a validação
+  foi feita e quais conteúdos estão publicados. O comentário PÚBLICO (visível ao
+  cliente) continua exigindo confirmação explícita do usuário.
 metadata:
   type: workflow
   source: >-
     Etapa atual de cada conteúdo é lida pela earth-cli (`earth content list` em
     lote, ou `earth content get` unitário), campos `new_step` + `current_status`.
-    Tarefa/lista de produção, comentário e movimento de kanban também via
-    earth-cli (fallback MCP liveseo-earth). NÃO usa o data warehouse (gestão) nem
-    o get_page_data_by_id do MCP (devolve o `step` legado e erra em muitas páginas).
+    Marcar como Publicado usa a mesma rota do app (PATCH
+    /content/{post|page}/{projectId}/{id}/save-changes, new_step=PUBLISHED) com a
+    credencial da earth-cli. Tarefa/lista de produção, comentário/nota interna e
+    movimento de kanban também via earth-cli (fallback MCP liveseo-earth). NÃO usa
+    o data warehouse (gestão) nem o get_page_data_by_id do MCP (devolve o `step`
+    legado e erra em muitas páginas).
 ---
 
 # verificar-upload-conteudo
@@ -188,6 +194,129 @@ como **a confirmar** (não arredonde para publicado).
 
 Itens em `PUBLISHED` **não** precisam de confirmação ao vivo — já estão no site.
 
+### 3b. Marcar como Publicado no módulo de conteúdo (automático)
+Todo item em `PUBLISH` que a confirmação ao vivo mostrou **no ar** deve ser
+**marcado como "Publicado"** no Earth (`new_step` → `PUBLISHED`) — senão o módulo
+de conteúdo continua em "Publicar" mesmo com a página no site. **Faça sem pedir
+confirmação** (é o registro do que já foi verificado). **Só marque o que foi
+confirmado no ar**: fora do ar, 404, título divergente ou "a confirmar" (site não
+abriu) **não** são marcados.
+
+A earth-cli não tem comando para mudar a etapa; o script abaixo usa a **mesma rota
+do app** (`PATCH /content/{post|page}/{projectId}/{id}/save-changes` com
+`new_step: PUBLISHED`) e a credencial da earth-cli. Ele só mexe em item que está em
+`PUBLISH` (ignora cancelado, já publicado e etapas anteriores — não pula etapas) e
+preenche o que o app exige para "Publicado" quando estiver vazio: **data de
+publicação** (= hoje) e **responsável pela publicação** (= o operador logado). Sem
+mês de referência ele não grava e avisa (`bloqueado_sem_mes_de_referencia`).
+
+Salve no scratchpad como `marcar_publicado.py` e rode **uma vez por tipo**, só com
+os ids confirmados no ar (rode com `--dry-run` antes se quiser ver o corpo):
+
+```bash
+python marcar_publicado.py --project 1079 --type blog --ids 52918,52952
+python marcar_publicado.py --project 1079 --type page --ids 34762
+```
+
+```python
+"""Marca conteúdos como Publicado (new_step=PUBLISHED) no módulo de conteúdo do Earth.
+
+Uso: python marcar_publicado.py --project 1079 --type blog --ids 47807,47808 [--dry-run]
+Só mexe em item que está em PUBLISH ("Publicar"); ignora cancelado, já publicado e etapas anteriores.
+Usa a credencial da earth-cli (mesma rota do app: PATCH /content/{post|page}/{projectId}/{id}/save-changes).
+"""
+import argparse, datetime, json, os, subprocess, sys
+
+try:
+    from earth_cli import manifest
+    from earth_cli.utils.http import EarthClient
+    from earth_cli.utils.tenant import get_base_url
+except ImportError:  # roda de novo com o python do venv da earth-cli (pipx)
+    for p in ("~/pipx/venvs/earth-cli/Scripts/python.exe", "~/.local/pipx/venvs/earth-cli/Scripts/python.exe",
+              "~/.local/pipx/venvs/earth-cli/bin/python", "~/.local/share/pipx/venvs/earth-cli/bin/python"):
+        py = os.path.expanduser(p)
+        if os.path.exists(py) and os.path.abspath(py) != os.path.abspath(sys.executable):
+            sys.exit(subprocess.run([py, *sys.argv]).returncode)
+    sys.exit("earth-cli não encontrada — instale/autentique a earth-cli (pipx) antes.")
+
+ap = argparse.ArgumentParser()
+ap.add_argument("--project", required=True, help="projectId numérico (ex.: CB789 -> 1079)")
+ap.add_argument("--type", required=True, choices=["blog", "post", "page"])
+ap.add_argument("--ids", required=True, help="ids separados por vírgula")
+ap.add_argument("--dry-run", action="store_true")
+a = ap.parse_args()
+sys.stdout.reconfigure(encoding="utf-8")
+
+company, server = "liveseo", "prod"
+try:
+    import tomllib
+    with open(os.path.expanduser("~/.earth/config.toml"), "rb") as f:
+        cfg = tomllib.load(f).get("default", {})
+    company, server = cfg.get("company", company), cfg.get("server", server)
+except Exception:
+    pass
+
+c = EarthClient(get_base_url(company, server), company, server, manifest.load())
+c._session()
+eu = c.raw_get("/auth/me").json()["data"]["id"]
+H = {"project": str(a.project)}
+tipo_get = "page" if a.type == "page" else "blog"
+tipo_save = "page" if a.type == "page" else "post"
+hoje = datetime.date.today().isoformat()
+
+
+def ler(cid):
+    r = c._client.get(f"/content/{tipo_get}/{cid}", headers=H)
+    return r.json() if r.status_code == 200 else {"_http": r.status_code, "_msg": r.text[:200]}
+
+
+saida = []
+for cid in [int(x) for x in a.ids.split(",") if x.strip()]:
+    d = ler(cid)
+    if "_http" in d:
+        saida.append({"id": cid, "resultado": "erro_leitura", **d})
+        continue
+    base = {"id": cid, "nome": d.get("name"), "etapa_antes": d.get("new_step")}
+    if d.get("current_status") == "REJECTED":
+        saida.append({**base, "resultado": "ignorado_cancelado"})
+        continue
+    if d.get("new_step") == "PUBLISHED":
+        saida.append({**base, "resultado": "ja_publicado"})
+        continue
+    if d.get("new_step") != "PUBLISH":
+        saida.append({**base, "resultado": "ignorado_fora_de_publicar"})
+        continue
+    if not d.get("reference_date"):
+        saida.append({**base, "resultado": "bloqueado_sem_mes_de_referencia"})
+        continue
+    corpo = {"new_step": "PUBLISHED"}
+    if not d.get("publishDate"):
+        corpo["publishDate"] = f"{hoje}T00:00:00.000Z"
+    if not d.get("publisher_id"):
+        corpo["publisher_id"] = eu
+    corpo["changedAt"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if a.dry_run:
+        saida.append({**base, "resultado": "dry_run", "corpo": corpo})
+        continue
+    r = c._client.patch(f"/content/{tipo_save}/{a.project}/{cid}/save-changes", json=corpo, headers=H)
+    if r.status_code >= 300:
+        saida.append({**base, "resultado": "erro_gravacao", "_http": r.status_code, "_msg": r.text[:200]})
+        continue
+    depois = ler(cid).get("new_step")
+    saida.append({**base, "resultado": "marcado_publicado" if depois == "PUBLISHED" else "nao_confirmado",
+                  "etapa_depois": depois, "corpo": corpo})
+
+print(json.dumps(saida, ensure_ascii=False, indent=1))
+```
+
+O script relê cada item depois de gravar e só reporta `marcado_publicado` se o
+`new_step` voltou `PUBLISHED`. `erro_gravacao` com HTTP 403 = o operador não tem
+permissão de publicar nesse projeto — **o conteúdo continua no ar** (conta como
+publicado para a tarefa), mas registre no relatório e na nota interna que a marcação
+no Earth ficou pendente. Fallback sem earth-cli: o mesmo PATCH pela sessão logada do
+app (Claude in Chrome, `fetch` com `credentials: "include"` em
+`https://app.liveseo.com.br/v2/content/{post|page}/{projectId}/{id}/save-changes`).
+
 ### 4. Ler os comentários (contexto) e relatar
 `earth --json task comment list <subtaskId>` (ou o MCP `get_subtask_comments`)
 costuma ter pistas: confirmações de "Upado" e relatos de problema. Cite no relatório.
@@ -206,7 +335,8 @@ Produção: N conteúdos (dedup). Etapa atual (new_step / current_status):
 | 🚫 Cancelados/rejeitados (não precisam subir) | C |
 | ❌ Pendentes (≤ CLIENT_REVIEW) | P |
 
-A publicar (liste cada PUBLISH e o resultado da confirmação ao vivo).
+A publicar (liste cada PUBLISH, o resultado da confirmação ao vivo e se foi
+marcado como Publicado no Earth — passo 3b).
 Pendências (liste cada um com nome, etapa e link do Earth).
 Cancelados (liste, para transparência).
 ```
@@ -221,8 +351,12 @@ diga isso explicitamente em vez de arredondar para "tudo certo".
 **Roteamento no kanban é automático.** Quando **todo item de produção estiver
 `PUBLISHED` (ou `PUBLISH` confirmado no ar) ou cancelado/rejeitado** — zero
 pendências e nenhum `PUBLISH` fora do ar — **mova a tarefa para "Para revisão"
-sozinha, sem pedir confirmação** (autorização durável do Hugo). Havendo qualquer
+sozinha, sem pedir confirmação** (autorização durável do Hugo) e **registre a nota
+interna da validação** (abaixo), também sem pedir confirmação. Havendo qualquer
 pendência, **não mova** — deixe na coluna atual e reporte o que falta.
+
+Ordem quando está tudo ok: **3b marcar Publicado → mover para "Para revisão" →
+nota interna**.
 
 **O comentário público continua exigindo confirmação.** Postar algo visível ao
 cliente é comunicação: **mostre o rascunho e só publique se o usuário confirmar.**
@@ -231,9 +365,9 @@ cliente é comunicação: **mostre o rascunho e só publique se o usuário confi
 Poste um comentário **público** (visível a todos, incluindo o cliente). Publicar é
 ação de comunicação — **exige confirmação explícita antes de postar**.
 
-- earth-cli: `earth --json --yes task comment add` com `id_content` = **SUBTASK_ID**
-  (o último número da URL da tarefa), `type_content=SUBTASK`, `type=MESSAGE`,
-  `comment=<html>`.
+- earth-cli: `earth --json --project CB### --yes comment add --body <arquivo.json>`
+  com `{"id_content": <SUBTASK_ID>, "type_content": "SUBTASK", "comment": "<html>",
+  "type": "MESSAGE", "checked": 0}` — SUBTASK_ID = o último número da URL da tarefa.
 - MCP (fallback): `post_subtask_comment`.
 
 O campo `comment` aceita HTML. Modelos:
@@ -269,8 +403,40 @@ confirmação ao vivo mostrou fora do ar — NÃO mova.** Deixe na coluna atual 
 o que falta subir. Não use "Finalizada": a skill entrega para revisão, quem finaliza
 é o líder/revisor.
 
-O movimento é o único passo automático. **Publicar comentário público continua
-sendo ação manual, com confirmação.**
+### Nota interna da validação (automática, junto com o movimento)
+Logo depois de mover para "Para revisão", registre na tarefa uma **nota interna**
+(`type: INTERNAL_NOTE` — só o time vê, o cliente não) dizendo que a validação foi
+feita e **quais conteúdos estão publicados**. É o rastro para quem for revisar: não
+precisa refazer a checagem. Não exige confirmação (não é comunicação com o cliente).
+
+- earth-cli: `earth --json --project CB### --yes comment add --body <arquivo.json>`
+  com `{"id_content": <SUBTASK_ID>, "type_content": "SUBTASK", "comment": "<html>",
+  "type": "INTERNAL_NOTE", "checked": 0}`.
+- MCP (fallback): `post_subtask_internal_note`.
+
+HTML aceito: `p, strong, em, ul/ol/li, a` (`<table>` é escapado pela API — use
+lista). Modelo:
+
+```html
+<p><strong>[Validação de upload]</strong> Validação feita em {DD/MM/AAAA}: os {N}
+conteúdos da Produção foram conferidos (etapa no Earth + confirmação ao vivo dos que
+estavam em "Publicar"). Tarefa movida para Para revisão.</p>
+<p><strong>Publicados ({X}):</strong></p>
+<ul>
+  <li><a href="{URL no ar}">{Nome}</a> — <a href="https://app.liveseo.com.br/projeto/{CB}/{page|blog}/{id}">Earth</a>{ — marcado como Publicado nesta validação}</li>
+</ul>
+<p><strong>Cancelados ({C}):</strong> {Nome} (<a href="...">Earth</a>), ...</p>
+```
+
+- Liste **todos** os publicados, com o link no ar e o link do Earth; marque com
+  "marcado como Publicado nesta validação" os que o passo 3b mudou de etapa.
+- Omita o bloco de cancelados se não houver.
+- Se alguma marcação do passo 3b falhou (ex.: 403), diga na nota: "{Nome} está no
+  ar, mas não foi possível marcar como Publicado no Earth ({motivo})".
+
+O movimento e a nota interna (e a marcação Publicado do passo 3b) são os passos
+automáticos. **Publicar comentário público continua sendo ação manual, com
+confirmação.**
 
 ## Princípios
 
@@ -285,6 +451,10 @@ sendo ação manual, com confirmação.**
   como falta e não impede a conclusão.
 - **A verdade é o status no Earth (e, em dúvida, o site ao vivo), não o bloco de
   Upload.** A lista de produção diz o que precisa estar no ar.
+- **Confirmado no ar → marcado como Publicado no Earth.** Item em `PUBLISH` que a
+  confirmação ao vivo mostrou no site vira `PUBLISHED` no módulo de conteúdo
+  (passo 3b); o que não foi confirmado no ar não é marcado.
 - **Roteamento automático quando tudo no ar/cancelado; comunicação com confirmação.**
-  Verificar é livre; zero pendências → **move para "Para revisão" sozinha** (sem
-  confirmação). **Comentar (público, visível ao cliente) exige confirmação explícita.**
+  Verificar é livre; zero pendências → **move para "Para revisão" sozinha** e
+  **registra a nota interna** com o que está publicado (sem confirmação).
+  **Comentar (público, visível ao cliente) exige confirmação explícita.**
